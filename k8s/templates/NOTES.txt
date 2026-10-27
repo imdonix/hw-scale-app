@@ -1,0 +1,16 @@
+sscale has been installed.
+
+The web UI is exposed at:
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}/
+{{- end }}
+
+The API key is generated on first start and stored in the database. Read it with:
+
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "sscale.fullname" . }} -- sscale apikey
+
+The pairing keys were mounted from Secret "{{ include "sscale.keysSecretName" . }}" (key "{{ .Values.keys.secretKey }}").
+Data (SQLite database, daemon state) is stored on PVC "{{ include "sscale.dataClaimName" . }}".
+
+Bluetooth: this pod talks to the host's bluetoothd through {{ .Values.dbus.hostPath }}
+and must run on the node with the Bluetooth adapter (nodeSelector).

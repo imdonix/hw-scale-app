@@ -1,0 +1,100 @@
+# Default values for sscale. The defaults target the single-node k3s cluster
+# (lapiz-m) that owns the Bluetooth adapter, with scale.donix.dev as ingress.
+
+replicaCount: 1
+
+image:
+  repository: imdonix/hw-scale-app
+  # The publish workflow pushes :latest from main plus :sha-<commit> tags.
+  # Pin digest or sha-* tag for reproducible deployments.
+  tag: latest
+  pullPolicy: Always
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+
+# Security context for the container. /run/dbus access needs an unconfined
+# AppArmor profile (same reason docker-compose.yml sets apparmor=unconfined).
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  appArmorProfile:
+    type: Unconfined
+
+# The pairing secrets (keys.json). Create the Secret before installing:
+#   kubectl -n sscale create secret generic sscale-keys --from-file=keys.json=./keys.json
+keys:
+  existingSecret: sscale-keys
+  secretKey: keys.json
+
+config:
+  logLevel: info
+  # Bluetooth adapter, e.g. hci0. Empty lets the daemon pick the default one.
+  adapter: ""
+  trace: false
+  # Optional fixed API key. When empty it is generated and stored in /data.
+  apiKey: ""
+  timezone: Europe/Budapest
+
+persistence:
+  enabled: true
+  # Empty uses the cluster default StorageClass.
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+  # Use an existing PVC instead of creating one.
+  existingClaim: ""
+
+# Host directory containing bluetoothd's system D-Bus socket.
+dbus:
+  hostPath: /run/dbus
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: true
+  className: traefik
+  annotations: {}
+  hosts:
+    - host: scale.donix.dev
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    # secretName intentionally empty: Traefik serves its default certificate
+    # and Cloudflare terminates the public TLS connection.
+    - hosts:
+        - scale.donix.dev
+      secretName: ""
+
+# The scale daemon only works on the node that has the Bluetooth adapter.
+nodeSelector:
+  kubernetes.io/hostname: lapiz-m
+
+tolerations: []
+affinity: {}
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    memory: 256Mi
+
+# Additional environment variables, e.g. to use a Secret for SSCALE_API_KEY.
+extraEnv: []
+extraEnvFrom: []
