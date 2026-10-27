@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# Host-side launcher: runs sscale inside Docker (never natively).
+# It does not build anything; build the image once with:  docker compose build
+#
+#   ./sscale                 start the daemon in the background
+#   ./sscale -f              run the daemon in the foreground (Ctrl-C stops it)
+#   ./sscale stop            stop the daemon
+#   ./sscale logs [-f]       show (follow) the background daemon's log
+#   ./sscale scan|pair|once|status|history|version|help [flags]
+set -euo pipefail
+
+cd "$(dirname "$(readlink -f "$0")")"
+
+SERVICE=sscale
+CONTAINER=sscale
+IMAGE=sscale:latest
+
+compose() { docker compose --progress quiet "$@"; }
+
+running() {
+    [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || true)" = "true" ]
+}
+
+require_image() {
+    if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+        echo "error: Docker image $IMAGE not found. Build it first with: docker compose build" >&2
+        exit 1
+    fi
+    if [ ! -f keys.json ]; then
+        echo "error: keys.json not found in $(pwd)" >&2
+        exit 1
+    fi
+    mkdir -p data
+}
+
+# No command (only flags) means the daemon.
+if [ $# -eq 0 ] || [[ "$1" == -* && "$1" != "-h" && "$1" != "--help" ]]; then
+    set -- daemon "$@"
+fi
+cmd="$1"
+shift
+
+case "$cmd" in
+    daemon)
+        foreground=false
+        rest=()
+        for a in "$@"; do
+            case "$a" in
+                -f | --foreground | -foreground) foreground=true ;;
+                *) rest+=("$a") ;;
+            esac
+        done
+        if running; then
+            echo "The sscale daemon is already running in the background (./sscale stop to stop it)." >&2
+            exit 1
+        fi
+        require_image
+        if $foreground; then
+            compose run --rm --service-ports --name sscale-foreground "$SERVICE" daemon --foreground "${rest[@]}"
+        else
+            if [ ${#rest[@]} -gt 0 ]; then
+                echo "error: daemon flags are only supported with -f; set SSCALE_* variables for the background daemon" >&2
+                exit 2
+            fi
+            compose up -d "$SERVICE"
+            echo "sscale daemon started in the background."
+            echo "  log:     ./sscale logs -f"
+            echo "  status:  ./sscale status"
+            echo "  stop:    ./sscale stop"
+        fi
+        ;;
+    stop)
+        if running; then
+            compose stop "$SERVICE"
+            echo "sscale daemon stopped."
+        else
+            echo "sscale daemon is not running."
+        fi
+        ;;
+    logs)
+        docker logs "$@" "$CONTAINER"
+        ;;
+    *)
+        if running; then
+            tty=-i
+            [ -t 0 ] && [ -t 1 ] && tty=-it
+            docker exec "$tty" "$CONTAINER" sscale "$cmd" "$@"
+        else
+            require_image
+            notty=()
+            [ -t 0 ] && [ -t 1 ] || notty=(-T)
+            compose run --rm "${notty[@]}" "$SERVICE" "$cmd" "$@"
+        fi
+        ;;
+esac

@@ -1,0 +1,39 @@
+name: sscale
+
+services:
+  sscale:
+    build:
+      context: .
+      args:
+        VERSION: ${SSCALE_VERSION:-dev}
+    image: sscale:latest
+    container_name: sscale
+    restart: unless-stopped
+    # Web app + REST API. Set SSCALE_PORT to change the host port.
+    ports:
+      - "${SSCALE_PORT:-8090}:8080"
+    # The host's bluetoothd owns the Bluetooth controller; the container uses
+    # it over D-Bus. Docker's default AppArmor profile blocks D-Bus, hence
+    # apparmor=unconfined (no extra capabilities or privileged mode needed).
+    security_opt:
+      - apparmor=unconfined
+    volumes:
+      # The directory (not the socket file) so a dbus restart is picked up.
+      - /run/dbus:/run/dbus
+      - ./keys.json:/config/keys.json:ro
+      - ./data:/data
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      SSCALE_LOG_LEVEL: ${SSCALE_LOG_LEVEL:-info}
+      SSCALE_ADAPTER: ${SSCALE_ADAPTER:-}
+      SSCALE_TRACE: ${SSCALE_TRACE:-false}
+      # Optional: fixed API key instead of the generated one.
+      SSCALE_API_KEY: ${SSCALE_API_KEY:-}
+      # Optional HTTPS (paths inside the container, e.g. mount ./certs:/certs:ro).
+      SSCALE_TLS_CERT: ${SSCALE_TLS_CERT:-}
+      SSCALE_TLS_KEY: ${SSCALE_TLS_KEY:-}
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
