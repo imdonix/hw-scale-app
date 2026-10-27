@@ -2,6 +2,7 @@ import { useMemo } from "react"
 
 import { Card, CardContent } from "@/components/ui/card"
 import type { Measurement, Status } from "@/lib/api"
+import type { LiveEvent } from "@/lib/live"
 import { fmtShort, relative, sameMonth } from "@/lib/dates"
 import { cn } from "@/lib/utils"
 
@@ -25,7 +26,18 @@ function Sparkline({ points }: { points: { t: number; w: number }[] }) {
   )
 }
 
-export function Summary({ month, readings, status }: { month: Date; readings: Measurement[]; status: Status | null }) {
+export function Summary({
+  month,
+  readings,
+  status,
+  live,
+}: {
+  month: Date
+  readings: Measurement[]
+  status: Status | null
+  live: LiveEvent | null
+}) {
+  const connected = !!live && !["idle", "done", "failed"].includes(live.phase)
   const stats = useMemo(() => {
     const inMonth = readings.filter((r) => r.valid && sameMonth(new Date(r.time), month))
     if (!inMonth.length) return null
@@ -41,7 +53,7 @@ export function Summary({ month, readings, status }: { month: Date; readings: Me
   }, [month, readings])
 
   const latest = status?.latest
-  const awake = status?.scale.awake
+  const awake = connected || status?.scale.awake
   const lastSeen = status?.scale.last_seen ? new Date(status.scale.last_seen) : null
 
   return (
@@ -73,10 +85,20 @@ export function Summary({ month, readings, status }: { month: Date; readings: Me
             <span
               className={cn(
                 "size-2 rounded-full",
-                !status?.daemon.running ? "bg-muted-foreground/40" : awake ? "animate-pulse bg-emerald-500" : "bg-muted-foreground/60",
+                !connected && !status?.daemon.running ? "bg-muted-foreground/40" : awake ? "animate-pulse bg-emerald-500" : "bg-muted-foreground/60",
               )}
             />
-            {!status ? "…" : !status.daemon.running ? "offline" : awake ? "scale awake" : lastSeen ? `seen ${relative(lastSeen)}` : "asleep"}
+            {connected
+              ? "connected"
+              : !status
+                ? "…"
+                : !status.daemon.running
+                  ? "offline"
+                  : awake
+                    ? "scale awake"
+                    : lastSeen
+                      ? `seen ${relative(lastSeen)}`
+                      : "asleep"}
           </div>
         </div>
 

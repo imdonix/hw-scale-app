@@ -14,6 +14,7 @@ import (
 	"github.com/tamasmagyar/sscale/internal/app"
 	"github.com/tamasmagyar/sscale/internal/bluez"
 	"github.com/tamasmagyar/sscale/internal/config"
+	"github.com/tamasmagyar/sscale/internal/live"
 	"github.com/tamasmagyar/sscale/internal/store"
 )
 
@@ -105,6 +106,7 @@ type Daemon struct {
 	Cfg   *config.Config
 	Store *store.Store
 	App   *app.App
+	Live  *live.Hub // may be nil
 	Log   *slog.Logger
 }
 
@@ -179,7 +181,7 @@ func (d *Daemon) runBus(ctx context.Context) error {
 	dev := adapter.Device(cfg.Address)
 	pres := WatchPresence(bus, dev)
 	defer pres.Close()
-	runner := &Runner{Cfg: cfg, Store: d.Store, App: d.App, Log: d.Log}
+	runner := &Runner{Cfg: cfg, Store: d.Store, App: d.App, Live: d.Live, Log: d.Log}
 
 	// A stale connection (e.g. after a crash) would keep the scale awake.
 	if info, err := dev.Info(ctx); err == nil && info.Connected {

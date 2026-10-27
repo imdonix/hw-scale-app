@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/tamasmagyar/sscale/internal/app"
 	"github.com/tamasmagyar/sscale/internal/config"
 	"github.com/tamasmagyar/sscale/internal/db"
+	"github.com/tamasmagyar/sscale/internal/live"
 	"github.com/tamasmagyar/sscale/internal/store"
 )
 
@@ -180,3 +183,54 @@ func TestSPA(t *testing.T) {
 }
 
 func itoa(v int64) string { b, _ := json.Marshal(v); return string(b) }
+
+func TestLiveStream(t *testing.T) {
+	f := setup(t)
+	hub := live.New()
+	s := &Server{App: f.app, State: func() store.State { return store.State{} }, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Live: hub, LiveHeartbeat: 50 * time.Millisecond}
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	resp, _ := http.Get(srv.URL + "/api/live")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("live without key: %d", resp.StatusCode)
+	}
+	req, _ := http.NewRequest("GET", srv.URL+"/api/live", nil)
+	req.Header.Set("Authorization", "Bearer "+f.key)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("content type %q", ct)
+	}
+	sc := bufio.NewScanner(resp.Body)
+	nextEvent := func() live.Event {
+		t.Helper()
+		for sc.Scan() {
+			line := sc.Text()
+			if strings.HasPrefix(line, "data: ") {
+				var e live.Event
+				if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &e); err != nil {
+					t.Fatal(err)
+				}
+				return e
+			}
+		}
+		t.Fatal("stream ended")
+		return live.Event{}
+	}
+	if e := nextEvent(); e.Phase != live.Idle {
+		t.Fatalf("first event %+v", e)
+	}
+	hub.Start("Connecting to the scale")
+	if e := nextEvent(); e.Phase != live.Connecting || e.Message == "" {
+		t.Fatalf("second event %+v", e)
+	}
+	hub.Update(func(e *live.Event) { e.Phase, e.WeightKg = live.Weighing, 77.5 })
+	if e := nextEvent(); e.WeightKg != 77.5 {
+		t.Fatalf("third event %+v", e)
+	}
+}

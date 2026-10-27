@@ -33,6 +33,7 @@ import (
 	"github.com/tamasmagyar/sscale/internal/config"
 	"github.com/tamasmagyar/sscale/internal/daemon"
 	"github.com/tamasmagyar/sscale/internal/db"
+	"github.com/tamasmagyar/sscale/internal/live"
 	"github.com/tamasmagyar/sscale/internal/logx"
 	"github.com/tamasmagyar/sscale/internal/store"
 	"github.com/tamasmagyar/sscale/internal/webui"
@@ -192,15 +193,16 @@ func cmdDaemon(cfg *config.Config, args []string) error {
 	}
 	defer a.Close()
 
+	hub := live.New()
 	httpErr := make(chan error, 1)
 	if cfg.HTTPAddr != "" {
-		srv, err := startHTTP(ctx, cfg, a, st, log)
+		srv, err := startHTTP(ctx, cfg, a, st, hub, log)
 		if err != nil {
 			return err
 		}
 		go func() { httpErr <- srv() }()
 	}
-	d := &daemon.Daemon{Cfg: cfg, Store: st, App: a, Log: log}
+	d := &daemon.Daemon{Cfg: cfg, Store: st, App: a, Live: hub, Log: log}
 	done := make(chan error, 1)
 	go func() { done <- d.Run(ctx) }()
 	select {
@@ -265,7 +267,7 @@ func startBackground(cfg *config.Config, args []string) error {
 
 // startHTTP prepares the REST API / web app server. The returned func
 // serves until ctx is cancelled.
-func startHTTP(ctx context.Context, cfg *config.Config, a *app.App, st *store.Store, log *slog.Logger) (func() error, error) {
+func startHTTP(ctx context.Context, cfg *config.Config, a *app.App, st *store.Store, hub *live.Hub, log *slog.Logger) (func() error, error) {
 	key := cfg.APIKey
 	if key == "" {
 		k, created, err := a.DB.APIKey(ctx)
@@ -290,6 +292,7 @@ func startHTTP(ctx context.Context, cfg *config.Config, a *app.App, st *store.St
 		UI:          webui.FS(),
 		Log:         log,
 		KeyOverride: cfg.APIKey,
+		Live:        hub,
 	}
 	hs := &http.Server{
 		Addr:              cfg.HTTPAddr,

@@ -5,11 +5,13 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/calendar"
 import { DaySheet } from "@/components/day-sheet"
+import { LiveActivity } from "@/components/live-activity"
 import { Login } from "@/components/login"
 import { SettingsSheet } from "@/components/settings-sheet"
 import { Summary } from "@/components/summary"
 import { api, ApiError, cacheGet, cacheSet, getApiKey, setApiKey, type Measurement, type Status } from "@/lib/api"
 import { addDays, addMonths, dayKey, fmtMonth, monthGrid, sameMonth, startOfMonth } from "@/lib/dates"
+import { useLive } from "@/lib/live"
 import { groupByDay, type DayInfo } from "@/lib/readings"
 
 const SHOW_HIDDEN = "sscale.showHidden"
@@ -74,6 +76,14 @@ function Tracker({ onSignOut }: { onSignOut: () => void }) {
     }
   }, [load])
 
+  // Live scale session: refresh the calendar as soon as a reading is saved.
+  const live = useLive()
+  const savedKey = live && (live.phase === "saved" || live.phase === "done") ? `${live.session_started_at}:${live.measurement?.id ?? ""}` : ""
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (savedKey) load()
+  }, [savedKey, load])
+
   const selectedDay: DayInfo | null = useMemo(() => {
     if (!selected) return null
     const list = groupByDay(readings).get(dayKey(selected)) ?? []
@@ -109,7 +119,8 @@ function Tracker({ onSignOut }: { onSignOut: () => void }) {
         </div>
       </header>
 
-      <Summary month={month} readings={readings} status={status} />
+      <LiveActivity event={live} onChanged={load} />
+      <Summary month={month} readings={readings} status={status} live={live} />
 
       <section onTouchStart={onTouchStart} onTouchEnd={onTouchEnd} className="flex flex-col gap-2">
         <div className="flex items-center justify-between">

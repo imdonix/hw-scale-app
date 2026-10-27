@@ -16,6 +16,7 @@ import (
 
 	"github.com/tamasmagyar/sscale/internal/app"
 	"github.com/tamasmagyar/sscale/internal/db"
+	"github.com/tamasmagyar/sscale/internal/live"
 	"github.com/tamasmagyar/sscale/internal/store"
 )
 
@@ -30,6 +31,10 @@ type Server struct {
 	Log     *slog.Logger
 	// KeyOverride, when set, is used instead of the stored API key.
 	KeyOverride string
+	// Live is the scale session feed for GET /api/live (may be nil).
+	Live *live.Hub
+	// LiveHeartbeat is the keep-alive interval of the live stream.
+	LiveHeartbeat time.Duration
 }
 
 // Handler returns the HTTP handler.
@@ -42,6 +47,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/measurements", s.auth(s.listMeasurements))
 	mux.Handle("PATCH /api/measurements/{id}", s.auth(s.patchMeasurement))
 	mux.Handle("DELETE /api/measurements/{id}", s.auth(s.deleteMeasurement))
+	mux.Handle("GET /api/live", s.auth(s.liveStream))
 	mux.Handle("GET /api/settings", s.auth(s.getSettings))
 	mux.Handle("PUT /api/settings", s.auth(s.putSettings))
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
@@ -201,6 +207,49 @@ func (s *Server) deleteMeasurement(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// liveStream sends the scale session state as Server-Sent Events: the
+// current state immediately, then every change.
+func (s *Server) liveStream(w http.ResponseWriter, r *http.Request) {
+	rc := http.NewResponseController(w)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Accel-Buffering", "no") // disable proxy buffering (nginx)
+	w.WriteHeader(http.StatusOK)
+
+	events, cancel := s.Live.Subscribe()
+	defer cancel()
+	hb := s.LiveHeartbeat
+	if hb <= 0 {
+		hb = 15 * time.Second
+	}
+	ticker := time.NewTicker(hb)
+	defer ticker.Stop()
+	send := func(b []byte) bool {
+		if _, err := w.Write(b); err != nil {
+			return false
+		}
+		return rc.Flush() == nil
+	}
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case ev := <-events:
+			b, err := json.Marshal(ev)
+			if err != nil {
+				return
+			}
+			if !send([]byte("event: live\ndata: " + string(b) + "\n\n")) {
+				return
+			}
+		case <-ticker.C:
+			if !send([]byte(": ping\n\n")) {
+				return
+			}
+		}
+	}
+}
+
 func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.App.Settings(r.Context()))
 }
@@ -255,6 +304,9 @@ type statusWriter struct {
 }
 
 func (s *statusWriter) WriteHeader(c int) { s.code = c; s.ResponseWriter.WriteHeader(c) }
+
+// Unwrap lets http.ResponseController reach the underlying writer (Flush).
+func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
 func logRequests(log *slog.Logger, h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

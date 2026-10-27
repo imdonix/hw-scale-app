@@ -16,6 +16,7 @@ import (
 	"github.com/tamasmagyar/sscale/internal/config"
 	"github.com/tamasmagyar/sscale/internal/db"
 	"github.com/tamasmagyar/sscale/internal/hagrid"
+	"github.com/tamasmagyar/sscale/internal/live"
 	"github.com/tamasmagyar/sscale/internal/scale"
 	"github.com/tamasmagyar/sscale/internal/store"
 )
@@ -26,6 +27,8 @@ type Runner struct {
 	Store *store.Store // daemon/pairing state (state.json)
 	App   *app.App     // measurements and settings (SQLite)
 	Log   *slog.Logger
+	// Live receives session progress for the web app (may be nil).
+	Live *live.Hub
 	// Dial overrides how the link is established (tests); default BlueZ.
 	Dial func(ctx context.Context) (scale.Transport, error)
 
@@ -49,10 +52,12 @@ type Outcome struct {
 
 // Run connects, authenticates, syncs time and profile and, depending on
 // mode, captures measurements. It always disconnects before returning.
-func (r *Runner) Run(ctx context.Context, adapter *bluez.Adapter, mode Mode) (Outcome, error) {
-	var out Outcome
+func (r *Runner) Run(ctx context.Context, adapter *bluez.Adapter, mode Mode) (out Outcome, err error) {
 	ctx, cancel := context.WithTimeout(ctx, r.Cfg.SessionTimeout)
 	defer cancel()
+
+	r.Live.Start("Connecting to the scale")
+	defer func() { r.finishLive(out, err) }()
 
 	r.Log.Info("connecting to scale", "address", r.Cfg.Address)
 	octx, ocancel := context.WithTimeout(ctx, 40*time.Second)
@@ -85,6 +90,7 @@ func (r *Runner) Run(ctx context.Context, adapter *bluez.Adapter, mode Mode) (Ou
 		return out, err
 	}
 	r.Log.Info("authenticated")
+	r.Live.Set(live.Waiting, "Connected – step on the scale")
 
 	now := time.Now()
 	if err := sess.SyncTime(ctx, now); err != nil {
@@ -145,6 +151,11 @@ func (r *Runner) Run(ctx context.Context, adapter *bluez.Adapter, mode Mode) (Ou
 			lastLive = m.WeightKg
 			r.Log.Info("live weight", "weight", fmt.Sprintf("%.2fkg", m.WeightKg))
 		}
+		phase, msg := live.Weighing, "Weight measured"
+		if len(m.LowImpedance) == 0 || m.LowImpedance[0] == 0 {
+			phase, msg = live.Analyzing, "Measuring body composition – stay on the scale"
+		}
+		r.Live.Update(func(e *live.Event) { e.Phase, e.Message, e.WeightKg = phase, msg, m.WeightKg })
 	})
 	if res.Measurement != nil {
 		// "live": weighed during this connection; "latest": the scale's last
@@ -185,6 +196,37 @@ func (r *Runner) capture(ctx context.Context, m *db.Measurement, out *Outcome) {
 	}
 	out.New = append(out.New, v)
 	LogRecord(r.Log, v)
+	r.Live.Update(func(e *live.Event) {
+		e.Phase, e.Message, e.WeightKg, e.Measurement = live.Saved, "Saved", v.WeightKg, v
+	})
+}
+
+// finishLive publishes the end of a session.
+func (r *Runner) finishLive(out Outcome, err error) {
+	r.Live.Update(func(e *live.Event) {
+		switch {
+		case err != nil && len(out.New) == 0:
+			e.Phase, e.Message, e.Error = live.Failed, "Couldn't read the scale", liveError(err)
+		case len(out.New) > 0:
+			e.Phase, e.Message = live.Done, "Saved"
+		default:
+			e.Phase, e.Message = live.Done, "No new reading"
+		}
+	})
+}
+
+func liveError(err error) string {
+	switch {
+	case errors.Is(err, scale.ErrAuthFailed):
+		return "The scale rejected the keys in keys.json."
+	case errors.Is(err, scale.ErrDisconnected):
+		return "The scale disconnected."
+	case errors.Is(err, context.DeadlineExceeded):
+		return "The scale did not respond in time."
+	case errors.Is(err, context.Canceled):
+		return "Stopped."
+	}
+	return err.Error()
 }
 
 func (r *Runner) userInfo(ctx context.Context, huid string, now time.Time) hagrid.UserInfo {

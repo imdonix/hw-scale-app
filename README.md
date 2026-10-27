@@ -63,6 +63,14 @@ day for all readings with full body composition, and to mark a reading
 **Not me** / **That was me**, reset it to automatic, or delete it. Swipe
 left/right to change month.
 
+**Live activity.** While the daemon is connected to the scale, a card slides
+open under the title and follows the session: *Scale woke up* → *Step on the
+scale* → live weight → *Analyzing body composition* → *Saved* with BMI, fat,
+muscle and water (or *Not counted* with a "That was me" button if the filter
+hid it). It closes by itself 7 s after the scale disconnects (or tap ×). It
+pushes the page down instead of covering it and stays pinned at the top while
+you scroll; the calendar refreshes as soon as the reading is saved.
+
 Settings (gear icon): height, birthdate, sex (used for BMI and body
 composition, and sent to the scale), the filter and its tolerance, and
 "show hidden readings". Changing your profile recomputes past readings.
@@ -105,6 +113,7 @@ printed to the log at every start; `SSCALE_API_KEY` sets a fixed one.
 | `PATCH /api/measurements/{id}` `{"valid": true\|false\|null}` | your decision (`null` = automatic) |
 | `DELETE /api/measurements/{id}` | delete a reading |
 | `GET /api/settings`, `PUT /api/settings` | profile + filter settings |
+| `GET /api/live` | Server-Sent Events: the current scale session (`connecting`, `waiting`, `weighing`, `analyzing`, `saved`, `done`, `failed`, `idle`) with live weight and the saved reading |
 
 ```sh
 curl -H "Authorization: Bearer $(./sscale apikey)" "http://localhost:8090/api/measurements?from=2026-10-01"
@@ -194,7 +203,7 @@ API). For UI work run the daemon (`./sscale -f`) and `npm run dev` in `web/`
 Layout: `internal/hagrid` protocol · `internal/bluez` BlueZ D-Bus ·
 `internal/scale` session · `internal/daemon` scan/connect policy ·
 `internal/app` service layer · `internal/db` SQLite · `internal/trend`
-filter · `internal/api` REST · `internal/webui` embedded app · `web/` React +
+filter · `internal/live` session feed · `internal/api` REST · `internal/webui` embedded app · `web/` React +
 shadcn/ui PWA · `cmd/sscale` CLI.
 
 ## Troubleshooting

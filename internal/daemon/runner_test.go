@@ -2,14 +2,17 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/tamasmagyar/sscale/internal/app"
 	"github.com/tamasmagyar/sscale/internal/config"
 	"github.com/tamasmagyar/sscale/internal/hagrid"
+	"github.com/tamasmagyar/sscale/internal/live"
 	"github.com/tamasmagyar/sscale/internal/scale"
 	"github.com/tamasmagyar/sscale/internal/store"
 )
@@ -202,5 +205,82 @@ func TestCooldownSurvivesRestart(t *testing.T) {
 	st.LastSession = &store.Session{Result: "error", End: now}
 	if !initialLoopState(st, cfg, now).armed {
 		t.Fatal("failed session must not block a retry")
+	}
+}
+
+// collect records the phases a hub goes through.
+func collect(h *live.Hub) (func() []live.Event, func()) {
+	ch, cancel := h.Subscribe()
+	var mu sync.Mutex
+	var evs []live.Event
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for e := range ch {
+			mu.Lock()
+			evs = append(evs, e)
+			mu.Unlock()
+		}
+	}()
+	return func() []live.Event {
+			time.Sleep(50 * time.Millisecond)
+			mu.Lock()
+			defer mu.Unlock()
+			return append([]live.Event(nil), evs...)
+		}, func() {
+			cancel()
+		}
+}
+
+func phases(evs []live.Event) []live.Phase {
+	var out []live.Phase
+	for _, e := range evs {
+		if len(out) == 0 || out[len(out)-1] != e.Phase {
+			out = append(out, e.Phase)
+		}
+	}
+	return out
+}
+
+func TestRunnerPublishesLiveSession(t *testing.T) {
+	cfg := testConfig(t)
+	a := openApp(t, cfg)
+	st, _ := store.Open(cfg.DataDir)
+	now := time.Now().Truncate(time.Second)
+	fake := &scale.FakeScale{T: t, Secrets: cfg.Secrets, Address: cfg.Address, Statuses: []byte{1}, StatusReplies: 1,
+		RealtimeSeq: [][]byte{rec(77.5, now, 0, 0), rec(77.45, now, 5143, 0)}}
+	hub := live.New()
+	get, stop := collect(hub)
+	defer stop()
+	r := &Runner{Cfg: cfg, Store: st, App: a, Live: hub, Log: quiet(),
+		Dial: func(context.Context) (scale.Transport, error) { return fake, nil }}
+	if _, err := r.Run(context.Background(), nil, Mode{Measure: true}); err != nil {
+		t.Fatal(err)
+	}
+	evs := get()
+	got := phases(evs)
+	want := []live.Phase{live.Idle, live.Connecting, live.Waiting, live.Analyzing, live.Weighing, live.Saved, live.Done}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("phases %v, want %v", got, want)
+	}
+	last := evs[len(evs)-1]
+	if last.WeightKg != 77.45 || last.Measurement == nil || last.Message != "Saved" {
+		t.Fatalf("final event %+v", last)
+	}
+}
+
+func TestRunnerPublishesFailure(t *testing.T) {
+	cfg := testConfig(t)
+	a := openApp(t, cfg)
+	st, _ := store.Open(cfg.DataDir)
+	good := cfg.Secrets
+	cfg.Secrets.CAK = make([]byte, 16)
+	fake := &scale.FakeScale{T: t, Secrets: good, Address: cfg.Address}
+	hub := live.New()
+	r := &Runner{Cfg: cfg, Store: st, App: a, Live: hub, Log: quiet(),
+		Dial: func(context.Context) (scale.Transport, error) { return fake, nil }}
+	_, _ = r.Run(context.Background(), nil, Mode{Measure: true})
+	if e := hub.Current(); e.Phase != live.Failed || e.Error != "The scale rejected the keys in keys.json." {
+		t.Fatalf("%+v", e)
 	}
 }
